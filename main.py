@@ -1,23 +1,42 @@
+import os
 import yfinance as yf
 import pandas as pd
 import asyncio
 import matplotlib.pyplot as plt
 import io
 import warnings
-import os  # <--- 💎 關鍵：新增這行，讓程式會讀取系統保險箱
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 from datetime import datetime
 
+# --- 💎 核心修復：騙過 Render 的「門牌」系統 ---
+def run_dummy_server():
+    class SimpleHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"NeoTycoon is Live!")
+    # Render 會自動給一個 PORT 變數，我們要去讀它
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(('0.0.0.0', port), SimpleHandler)
+    print(f"✅ 門牌伺服器已啟動於 Port {port}")
+    server.serve_forever()
+
+# 在背景啟動門牌系統，不影響機器人運作
+threading.Thread(target=run_dummy_server, daemon=True).start()
+
 # 基礎設定
 warnings.filterwarnings("ignore")
 
-# 💎 大表哥專屬保險箱 (改從環境變數讀取，不再寫死在代碼裡)
+# 💎 讀取保險箱 (確保你在 Render Environment 有設定這兩個 Key)
 TOKEN = os.getenv("TELEGRAM_TOKEN")
+# 如果沒設定 CHAT_ID 就用預設
 CHAT_ID = os.getenv("CHAT_ID", "6419138408")
 
 def generate_custom_chart(df, symbol):
-    """復刻大表哥提供的 WTI 風格圖表"""
+    """復刻 WTI 風格圖表"""
     try:
         plt.figure(figsize=(10, 5))
         plt.style.use('bmh') 
@@ -38,7 +57,6 @@ def generate_custom_chart(df, symbol):
 def get_detailed_analysis(symbol):
     try:
         original_input = symbol.upper()
-        # BTC 自動轉換
         if original_input == "BTC": symbol = "BTC-USD"
         
         symbol = symbol.upper()
@@ -54,10 +72,10 @@ def get_detailed_analysis(symbol):
         p_usd = curr_price if not is_tw else curr_price / 32
         p_twd = curr_price * 32 if not is_tw else curr_price
 
-        # 安全計算年化報酬
         data_len = len(df)
         idx_2025 = min(252, data_len - 1)
         ret_2025 = ((df['Close'].iloc[-1] / df['Close'].iloc[-idx_2025]) - 1) * 100 if data_len > 1 else 0
+        
         if data_len > 504:
             ret_2024 = ((df['Close'].iloc[-252] / df['Close'].iloc[-504]) - 1) * 100
         elif data_len > 252:
@@ -65,7 +83,7 @@ def get_detailed_analysis(symbol):
         else:
             ret_2024 = 0
 
-        # 13勝策略
+        # 13勝策略邏輯
         df['SMA60'] = df['Close'].rolling(window=60).mean()
         df['SMA240'] = df['Close'].rolling(window=240).mean()
         last_60 = df['SMA60'].iloc[-1]
@@ -102,6 +120,7 @@ def get_detailed_analysis(symbol):
             [InlineKeyboardButton("Yahoo 商品代號查詢", url=f"https://finance.yahoo.com/quote/{symbol}")]
         ]
 
+        # 如果是台股或比特幣用我們自己畫的圖，美股用 Finviz 帥圖
         if is_tw or original_input == "BTC":
             img = generate_custom_chart(df, symbol)
         else:
@@ -113,6 +132,7 @@ def get_detailed_analysis(symbol):
         return f"⚠️ 錯誤：{e}", None, None
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text: return
     text = update.message.text.strip()
     if not text.lower().startswith("@nt"): return
     cmd = text[3:].strip()
@@ -136,4 +156,5 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+    print("🚀 機器人通靈中...")
     app.run_polling()
