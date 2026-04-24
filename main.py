@@ -49,7 +49,7 @@ def get_detailed_analysis(symbol):
         if original_input == "BTC": symbol = "BTC-USD"
         symbol = symbol.upper()
         
-        # ⭐ 關鍵修正：讓 yfinance 自己處理通訊，解決 Yahoo curl_cffi 錯誤
+        # ⭐ 關鍵修正：讓 yfinance 自己處理通訊
         ticker = yf.Ticker(symbol)
         df = ticker.history(period="3y")
         
@@ -75,21 +75,31 @@ def get_detailed_analysis(symbol):
         df['SMA240'] = df['Close'].rolling(window=240).mean()
         l60, l240 = df['SMA60'].iloc[-1], df['SMA240'].iloc[-1]
 
-        if curr_price > l60 and l60 > l240: status, advice = "✅ 要持有", "多頭排列強勢，建議抱緊"
-        elif curr_price > l240: status, advice = "🟡 觀察", "季線附近震盪，暫不追高"
-        else: status, advice = "❌ 賣出", "趨勢轉空，建議減碼"
+        if curr_price > l60 and l60 > l240: 
+            status, advice = "✅ 要持有", "多頭排列強勢，建議抱緊"
+            forecast = "+10% ~ +25%"
+        elif curr_price > l240: 
+            status, advice = "🟡 觀察", "季線附近震盪，暫不追高"
+            forecast = "-5% ~ +5%"
+        else: 
+            status, advice = "❌ 賣出", "趨勢轉空，建議減碼"
+            forecast = "-10% ~ +2%"
             
+        # ⭐ 最終排版：台幣下移、增加對齊感
         report = (
             f"💰 <b>【NeoTycoon 報告】</b>\n"
             f"---------------------------\n"
-            f"股票名稱：{name}\n"
-            f"目前價格：USD ${p_usd:,.2f} / TWD NT${p_twd:,.2f}\n"
+            f"名稱：{name}\n"
+            f"美金：${p_usd:,.2f}\n"
+            f"台幣：NT${p_twd:,.0f}\n"
             f"2025 報酬：{ret_2025:+.2f}%\n"
             f"2024 報酬：{ret_2024:+.2f}%\n"
+            f"未來一年預計：{forecast}\n"
+            f"---------------------------\n"
             f"持有建議：<b>{status}</b>\n"
             f"具體行動：{advice}\n"
             f"---------------------------\n"
-            f"詳細分析請點擊下方按鈕連結"
+            f"詳細點下面連結自己看👇( ｡•̀_•́｡)👇"
         )
         
         clean_sym = symbol.replace(".TW", "").replace("-USD", "")
@@ -111,12 +121,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("👋( ´ ▽ ` )嗨")
         return
     if cmd == "建議":
-        # 🏆 這裡就是你的「後台名單」，以後換股票改這裡就好
         top_list = ["NVDA", "2330.TW", "TSLA", "META", "2317.TW", "AAPL", "MSFT", "AMD", "AMZN", "2454.TW"]
-        
-        # 這行會自動幫你把名單編號並加粗
         list_text = "\n".join([f"{i+1}. <b>{code}</b>" for i, code in enumerate(top_list)])
-        
         rec = (
             f"🏆 <b>【NeoTycoon 策略推薦】</b>\n"
             f"---------------------------\n"
@@ -126,10 +132,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await update.message.reply_text(rec, parse_mode='HTML')
         return
+        
     wait_msg = await update.message.reply_text(f"🔍 正在通靈 {cmd}...")
     msg, markup, img = get_detailed_analysis(cmd)
     
-    # ⭐ 生死保險：失敗就換普通文字傳送
     try:
         if img: await update.message.reply_photo(photo=img, caption=msg, reply_markup=markup, parse_mode='HTML')
         else: await update.message.reply_text(msg, reply_markup=markup, parse_mode='HTML')
