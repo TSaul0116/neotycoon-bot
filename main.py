@@ -49,15 +49,13 @@ def get_detailed_analysis(symbol):
         if original_input == "BTC": symbol = "BTC-USD"
         symbol = symbol.upper()
         
-        session = requests.Session()
-        session.headers.update({'User-Agent': 'Mozilla/5.0'})
-        
-        ticker = yf.Ticker(symbol, session=session)
+        # ⭐ 關鍵修正：讓 yfinance 自己處理通訊，解決 Yahoo curl_cffi 錯誤
+        ticker = yf.Ticker(symbol)
         df = ticker.history(period="3y")
         
         if df.empty: return f"❌ 找不到 {symbol}", None, None
 
-        # ⭐ 重要修正：地毯式過濾 HTML 敏感符號
+        # ⭐ 重要：過濾特殊字元，防止 Telegram HTML 解析錯誤
         raw_name = ticker.info.get('shortName') or symbol
         name = str(raw_name).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
         
@@ -66,11 +64,13 @@ def get_detailed_analysis(symbol):
         p_usd = curr_price if not is_tw else curr_price / 32
         p_twd = curr_price * 32 if not is_tw else curr_price
 
+        # 計算報酬率
         data_len = len(df)
         idx_252 = min(252, data_len - 1)
         ret_2025 = ((df['Close'].iloc[-1] / df['Close'].iloc[-idx_252]) - 1) * 100
         ret_2024 = ((df['Close'].iloc[-idx_252] / df['Close'].iloc[-min(504, data_len-1)]) - 1) * 100 if data_len > 252 else 0
 
+        # 計算均線策略
         df['SMA60'] = df['Close'].rolling(window=60).mean()
         df['SMA240'] = df['Close'].rolling(window=240).mean()
         l60, l240 = df['SMA60'].iloc[-1], df['SMA240'].iloc[-1]
@@ -79,7 +79,6 @@ def get_detailed_analysis(symbol):
         elif curr_price > l240: status, advice = "🟡 觀察", "季線附近震盪，暫不追高"
         else: status, advice = "❌ 賣出", "趨勢轉空，建議減碼"
             
-        # 重新排版的報告，安全第一
         report = (
             f"💰 <b>【NeoTycoon 報告】</b>\n"
             f"---------------------------\n"
@@ -118,7 +117,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     wait_msg = await update.message.reply_text(f"🔍 正在通靈 {cmd}...")
     msg, markup, img = get_detailed_analysis(cmd)
     
-    # ⭐ 生死保險：嘗試用 HTML 傳送，失敗就用純文字傳送
+    # ⭐ 生死保險：失敗就換普通文字傳送
     try:
         if img: await update.message.reply_photo(photo=img, caption=msg, reply_markup=markup, parse_mode='HTML')
         else: await update.message.reply_text(msg, reply_markup=markup, parse_mode='HTML')
