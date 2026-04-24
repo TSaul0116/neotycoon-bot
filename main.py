@@ -111,9 +111,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("👋( ´ ▽ ` )嗨")
         return
     if cmd == "建議":
-        await update.message.reply_text("🏆 <b>TOP 10 推薦名單</b>\n1.NVDA 2.2330.TW 3.TSLA...", parse_mode='HTML')
+        # 🏆 這裡就是你的「後台名單」，以後換股票改這裡就好
+        top_list = ["NVDA", "2330.TW", "TSLA", "META", "2317.TW", "AAPL", "MSFT", "AMD", "AMZN", "2454.TW"]
+        
+        # 這行會自動幫你把名單編號並加粗
+        list_text = "\n".join([f"{i+1}. <b>{code}</b>" for i, code in enumerate(top_list)])
+        
+        rec = (
+            f"🏆 <b>【NeoTycoon 策略推薦】</b>\n"
+            f"---------------------------\n"
+            f"{list_text}\n"
+            f"---------------------------\n"
+            f"💡 輸入 <code>@nt 代號</code> 即可分析"
+        )
+        await update.message.reply_text(rec, parse_mode='HTML')
         return
-
     wait_msg = await update.message.reply_text(f"🔍 正在通靈 {cmd}...")
     msg, markup, img = get_detailed_analysis(cmd)
     
