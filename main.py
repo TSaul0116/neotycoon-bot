@@ -74,7 +74,9 @@ def get_detailed_analysis(symbol):
             return f"❌ 找不到 {symbol} 的資料，請確認代號是否正確。", None, None
 
         info = ticker.info
-        name = info.get('shortName') or symbol
+        # 這裡加一個安全處理，避免名稱裡面有奇怪符號導致傳送失敗
+        raw_name = info.get('shortName') or symbol
+        name = raw_name.replace('<', '&lt;').replace('>', '&gt;')
         curr_price = df['Close'].iloc[-1]
         
         is_tw = ".TW" in symbol
