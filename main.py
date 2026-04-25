@@ -148,9 +148,35 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
     await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=wait_msg.message_id)
 
+# 4. 設定 Bot Menu 選單的功能函式
+async def set_bot_menu(application):
+    commands = [
+        ("start", "🚀 啟動 NeoTycoon"),
+        ("suggest", "🏆 查看推薦名單"),
+        ("help", "❓ 使用說明")
+    ]
+    await application.bot.set_my_commands(commands)
+    print("✅ Bot Menu 選單設定成功！")
+
 if __name__ == "__main__":
     TOKEN = os.getenv("TELEGRAM_TOKEN")
     if TOKEN:
+        # 初始化機器人
         app = ApplicationBuilder().token(TOKEN).build()
+        
+        # ⭐ 關鍵：啟動時同步執行「選單設定」
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.ensure_future(set_bot_menu(app))
+            else:
+                loop.run_until_complete(set_bot_menu(app))
+        except:
+            pass
+
+        # 原有的訊息處理器
         app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+        
+        # 開始運行
+        print("🚀 NeoTycoon 正在運行中...")
         app.run_polling()
