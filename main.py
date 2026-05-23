@@ -43,58 +43,63 @@ def generate_custom_chart(df, symbol):
         return buf
     except: return None
 
-# 3. 核心分析 (修復 Stooq 與隱藏地雷的全面完工版)
+# 3. 核心分析 (終極防禦版：把美股與 Yahoo 徹底隔離)
 def get_detailed_analysis(symbol):
     try:
-        original_input = symbol.upper()
-        if original_input == "BTC": symbol = "BTC-USD"
-        symbol = symbol.upper()
+        original_input = symbol.upper().strip()
         
+        # 🟢 自動校正代號：把習慣打法翻譯成標準代號
+        if original_input == "BTC": original_input = "BTC-USD"
+        if original_input == "SNP": original_input = "SPY"  # SNP 自動校正為標普500 ETF
+        
+        symbol = original_input
         is_tw = ".TW" in symbol
         df = pd.DataFrame()
-        name = symbol  # 預設名稱為代號，防止美股去問 Yahoo 名字時被限流卡死
+        name = symbol  # 美股預設名稱直接等於代號，絕對不查 Yahoo
         
-        # 🌟 第一重保險：美股/加密貨幣優先嘗試走 Stooq 機制
+        # 🌟 絕對隔離區 1：美股、ETF、加密貨幣 -> 100% 只准走 Stooq
         if not is_tw:
-            try:
-                time.sleep(1) # 讓請求稍微緩衝 1 秒，假裝是人類
-                import pandas_datareader.data as web
+            import pandas_datareader.data as web
+            if "-USD" in symbol:
+                stooq_symbol = symbol.replace("-USD", "USD").upper() + ".CC"
+            else:
+                stooq_symbol = f"{symbol}.US"
                 
-                # 轉換 Stooq 專用後綴
-                if "-USD" in symbol:
-                    stooq_symbol = symbol.replace("-USD", "USD").upper() + ".CC"
-                else:
-                    stooq_symbol = f"{symbol}.US"
-                
-                end_date = datetime.now()
-                start_date = end_date - timedelta(days=3 * 365)
-                
-                # 從 Stooq 撈取資料
-                stooq_df = web.DataReader(stooq_symbol, 'stooq', start_date, end_date)
-                if stooq_df is not None and not stooq_df.empty:
-                    # 🟢 修正 1：先複製數據，確保欄位統一名稱，再做時間由舊到新排列
-                    df = stooq_df.copy()
-                    df.index.name = 'Date'
-                    df = df.sort_index(ascending=True) # 由舊到新 (2023 -> 2026)
-                    df = df.rename(columns={'Open': 'Open', 'High': 'High', 'Low': 'Low', 'Close': 'Close', 'Volume': 'Volume'})
-            except Exception as e:
-                print(f"🔄 Stooq 抓取失敗，準備切換回 Yahoo 備用線: {e}")
+            # 建立時間回溯防線：防週末、防連假
+            for days_back in [0, 1, 2, 3, 4, 5]:
+                try:
+                    time.sleep(0.3)
+                    end_date = datetime.now() - timedelta(days=days_back)
+                    start_date = end_date - timedelta(days=3 * 365)
+                    
+                    stooq_df = web.DataReader(stooq_symbol, 'stooq', start_date, end_date)
+                    if stooq_df is not None and not stooq_df.empty:
+                        df = stooq_df.copy()
+                        df.index.name = 'Date'
+                        df = df.sort_index(ascending=True)  # 時間由舊到新
+                        df = df.rename(columns={'Open': 'Open', 'High': 'High', 'Low': 'Low', 'Close': 'Close', 'Volume': 'Volume'})
+                        break  # 成功抓到，跳出迴圈
+                except:
+                    continue  # 失敗則繼續往前推一天找資料
+            
+            # 🔥 把門焊死：Stooq 如果還是抓不到，直接報錯，絕對不准去 yfinance！
+            if df.empty:
+                return f"❌ 數據庫目前無法取得美股 {symbol} 的資料，請檢查代號是否正確。", None, None
 
-        # 🌟 第二重保險：如果 Stooq 沒抓到，或者是台股，就走原來的 yfinance 路線
-        if df.empty:
+        # 🌟 絕對隔離區 2：只有台灣股票 (.TW) 才可以走 yfinance 路線
+        else:
             try:
                 ticker = yf.Ticker(symbol)
                 df = ticker.history(period="3y")
-                # 只有在這裡（台股或Stooq失效時）才嘗試拿取 Yahoo 名字
                 try:
                     raw_name = ticker.info.get('shortName') or symbol
                     name = str(raw_name).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
                 except:
                     pass
             except Exception as e:
-                return f"❌ 找不到 {symbol} 或 Yahoo 財經正忙，錯誤：{e}", None, None
+                return f"❌ 找不到台股 {symbol} 或 Yahoo 財經正忙，錯誤：{e}", None, None
         
-        # 🟢 修正 2：安全檢查，如果資料太少就拒絕分析
+        # 數據長度防呆檢查
         if df.empty or len(df) < 10: 
             return f"❌ 找不到 {symbol} 的歷史數據或資料量不足", None, None
 
@@ -102,20 +107,19 @@ def get_detailed_analysis(symbol):
         p_usd = curr_price if not is_tw else curr_price / 32
         p_twd = curr_price * 32 if not is_tw else curr_price
 
-        # 計算報酬率 (加上安全防呆，防止天數不夠)
+        # 計算報酬率 (加上安全範圍防呆)
         data_len = len(df)
         idx_252 = min(252, data_len - 1)
         idx_504 = min(504, data_len - 1)
         
         ret_2025 = ((df['Close'].iloc[-1] / df['Close'].iloc[-idx_252]) - 1) * 100 if data_len > idx_252 else 0
-        ret_2024 = ((df['Close'].iloc[-idx_252] / df['Close'].iloc[-idx_504]) - 1) * 100 if data_len > idx_252 else 0
+        ret_2024 = ((df['Close'].iloc[-idx_252] / df['Close'].iloc[-idx_504]) - 1) * 100 if data_len > idx_504 else 0
 
         # 計算均線策略
         df['SMA60'] = df['Close'].rolling(window=min(60, data_len)).mean()
         df['SMA240'] = df['Close'].rolling(window=min(240, data_len)).mean()
         l60, l240 = df['SMA60'].iloc[-1], df['SMA240'].iloc[-1]
 
-        # 補足均線不存在時的防呆
         if pd.isna(l60) or pd.isna(l240):
             status, advice = "🟡 觀察", "歷史數據不足以計算長期均線，請謹慎操作"
             forecast = "無法預估"
@@ -129,7 +133,7 @@ def get_detailed_analysis(symbol):
             status, advice = "❌ 賣出", "趨勢轉空，建議減碼"
             forecast = "-10% ~ +2%"
             
-        # ⭐ 最終排版
+        # 最終排版
         report = (
             f"💰 <b>【NeoTycoon 報告】</b>\n"
             f"---------------------------\n"
@@ -151,7 +155,8 @@ def get_detailed_analysis(symbol):
                     [InlineKeyboardButton("Investopedia", url=f"https://www.investopedia.com/search?q={clean_sym}")],
                     [InlineKeyboardButton("Yahoo Finance", url=f"https://finance.yahoo.com/quote/{symbol}")]]
 
-        img = generate_custom_chart(df, symbol) if (is_tw or original_input == "BTC") else f"https://charts2.finviz.com/chart.ashx?t={clean_sym}&ty=c&ta=1&p=d"
+        # 台股和比特幣使用內部畫圖，其他美股走 finviz 外鏈趨勢圖
+        img = generate_custom_chart(df, symbol) if (is_tw or original_input == "BTC-USD") else f"https://charts2.finviz.com/chart.ashx?t={clean_sym}&ty=c&ta=1&p=d"
         return report, InlineKeyboardMarkup(keyboard), img
     except Exception as e: return f"⚠️ 分析錯誤：{e}", None, None
 
