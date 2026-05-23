@@ -52,7 +52,7 @@ def get_detailed_analysis(symbol):
         
         is_tw = ".TW" in symbol
         df = pd.DataFrame()
-        name = symbol  # 預設名稱為代號，防止去問 Yahoo 名字時被限流卡死
+        name = symbol  # 預設名稱為代號，防止美股去問 Yahoo 名字時被限流卡死
         
         # 🌟 第一重保險：美股/加密貨幣優先嘗試走 Stooq 機制
         if not is_tw:
@@ -72,7 +72,7 @@ def get_detailed_analysis(symbol):
                 # 從 Stooq 撈取資料
                 stooq_df = web.DataReader(stooq_symbol, 'stooq', start_date, end_date)
                 if stooq_df is not None and not stooq_df.empty:
-                    # 🟢 修正核心 1：先複製數據，確保欄位統一名稱，再做時間正序排列
+                    # 🟢 修正 1：先複製數據，確保欄位統一名稱，再做時間由舊到新排列
                     df = stooq_df.copy()
                     df.index.name = 'Date'
                     df = df.sort_index(ascending=True) # 由舊到新 (2023 -> 2026)
@@ -85,7 +85,7 @@ def get_detailed_analysis(symbol):
             try:
                 ticker = yf.Ticker(symbol)
                 df = ticker.history(period="3y")
-                # 嘗試拿取 Yahoo 名字，失敗就用代號
+                # 只有在這裡（台股或Stooq失效時）才嘗試拿取 Yahoo 名字
                 try:
                     raw_name = ticker.info.get('shortName') or symbol
                     name = str(raw_name).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
@@ -94,7 +94,7 @@ def get_detailed_analysis(symbol):
             except Exception as e:
                 return f"❌ 找不到 {symbol} 或 Yahoo 財經正忙，錯誤：{e}", None, None
         
-        # 🟢 修正核心 3：安全檢查，如果資料太少就拒絕分析，防止後面 iloc[-1] 崩潰
+        # 🟢 修正 2：安全檢查，如果資料太少就拒絕分析
         if df.empty or len(df) < 10: 
             return f"❌ 找不到 {symbol} 的歷史數據或資料量不足", None, None
 
