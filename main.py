@@ -43,7 +43,7 @@ def generate_custom_chart(df, symbol):
         return buf
     except: return None
 
-# 3. 核心分析 (雙保險防爆版)
+# 3. 核心分析 (修復 Stooq 與隱藏地雷的全面完工版)
 def get_detailed_analysis(symbol):
     try:
         original_input = symbol.upper()
@@ -52,15 +52,15 @@ def get_detailed_analysis(symbol):
         
         is_tw = ".TW" in symbol
         df = pd.DataFrame()
+        name = symbol  # 預設名稱為代號，防止去問 Yahoo 名字時被限流卡死
         
-        # 🌟 第一重保險：美股/加密貨幣優先嘗試走 Stooq 機制，防 Yahoo 限流
+        # 🌟 第一重保險：美股/加密貨幣優先嘗試走 Stooq 機制
         if not is_tw:
             try:
-                # 讓請求稍微緩衝 1 秒，假裝是人類
-                time.sleep(1)
+                time.sleep(1) # 讓請求稍微緩衝 1 秒，假裝是人類
                 import pandas_datareader.data as web
                 
-                # Stooq 的美股格式通常是 AAPL.US，加密貨幣則是 BTCUSD.CC
+                # 轉換 Stooq 專用後綴
                 if "-USD" in symbol:
                     stooq_symbol = symbol.replace("-USD", "USD").upper() + ".CC"
                 else:
@@ -72,8 +72,10 @@ def get_detailed_analysis(symbol):
                 # 從 Stooq 撈取資料
                 stooq_df = web.DataReader(stooq_symbol, 'stooq', start_date, end_date)
                 if stooq_df is not None and not stooq_df.empty:
-                    df = stooq_df.sort_index()  # 轉成由舊到新排序
-                    # 統一欄位名稱對齊舊邏輯
+                    # 🟢 修正核心 1：先複製數據，確保欄位統一名稱，再做時間正序排列
+                    df = stooq_df.copy()
+                    df.index.name = 'Date'
+                    df = df.sort_index(ascending=True) # 由舊到新 (2023 -> 2026)
                     df = df.rename(columns={'Open': 'Open', 'High': 'High', 'Low': 'Low', 'Close': 'Close', 'Volume': 'Volume'})
             except Exception as e:
                 print(f"🔄 Stooq 抓取失敗，準備切換回 Yahoo 備用線: {e}")
@@ -83,36 +85,41 @@ def get_detailed_analysis(symbol):
             try:
                 ticker = yf.Ticker(symbol)
                 df = ticker.history(period="3y")
+                # 嘗試拿取 Yahoo 名字，失敗就用代號
+                try:
+                    raw_name = ticker.info.get('shortName') or symbol
+                    name = str(raw_name).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                except:
+                    pass
             except Exception as e:
                 return f"❌ 找不到 {symbol} 或 Yahoo 財經正忙，錯誤：{e}", None, None
         
-        if df.empty: return f"❌ 找不到 {symbol} 的歷史數據", None, None
+        # 🟢 修正核心 3：安全檢查，如果資料太少就拒絕分析，防止後面 iloc[-1] 崩潰
+        if df.empty or len(df) < 10: 
+            return f"❌ 找不到 {symbol} 的歷史數據或資料量不足", None, None
 
-        # ⭐ 重要：獲取名稱並過濾特殊字元
-        name = symbol
-        try:
-            ticker = yf.Ticker(symbol)
-            raw_name = ticker.info.get('shortName') or symbol
-            name = str(raw_name).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-        except:
-            pass
-        
         curr_price = float(df['Close'].iloc[-1])
         p_usd = curr_price if not is_tw else curr_price / 32
         p_twd = curr_price * 32 if not is_tw else curr_price
 
-        # 計算報酬率
+        # 計算報酬率 (加上安全防呆，防止天數不夠)
         data_len = len(df)
         idx_252 = min(252, data_len - 1)
-        ret_2025 = ((df['Close'].iloc[-1] / df['Close'].iloc[-idx_252]) - 1) * 100
-        ret_2024 = ((df['Close'].iloc[-idx_252] / df['Close'].iloc[-min(504, data_len-1)]) - 1) * 100 if data_len > 252 else 0
+        idx_504 = min(504, data_len - 1)
+        
+        ret_2025 = ((df['Close'].iloc[-1] / df['Close'].iloc[-idx_252]) - 1) * 100 if data_len > idx_252 else 0
+        ret_2024 = ((df['Close'].iloc[-idx_252] / df['Close'].iloc[-idx_504]) - 1) * 100 if data_len > idx_252 else 0
 
         # 計算均線策略
-        df['SMA60'] = df['Close'].rolling(window=60).mean()
-        df['SMA240'] = df['Close'].rolling(window=240).mean()
+        df['SMA60'] = df['Close'].rolling(window=min(60, data_len)).mean()
+        df['SMA240'] = df['Close'].rolling(window=min(240, data_len)).mean()
         l60, l240 = df['SMA60'].iloc[-1], df['SMA240'].iloc[-1]
 
-        if curr_price > l60 and l60 > l240: 
+        # 補足均線不存在時的防呆
+        if pd.isna(l60) or pd.isna(l240):
+            status, advice = "🟡 觀察", "歷史數據不足以計算長期均線，請謹慎操作"
+            forecast = "無法預估"
+        elif curr_price > l60 and l60 > l240: 
             status, advice = "✅ 要持有", "多頭排列強勢，建議抱緊"
             forecast = "+10% ~ +25%"
         elif curr_price > l240: 
@@ -200,10 +207,8 @@ async def set_bot_menu(application):
 if __name__ == "__main__":
     TOKEN = os.getenv("TELEGRAM_TOKEN")
     if TOKEN:
-        # 初始化機器人
         app = ApplicationBuilder().token(TOKEN).build()
         
-        # 啟動時同步執行「選單設定」
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
@@ -213,9 +218,6 @@ if __name__ == "__main__":
         except:
             pass
 
-        # 原有的訊息處理器
         app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-        
-        # 開始運行
         print("🚀 NeoTycoon 正在運行中...")
         app.run_polling()
