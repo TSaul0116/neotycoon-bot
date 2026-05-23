@@ -43,50 +43,52 @@ def generate_custom_chart(df, symbol):
         return buf
     except: return None
 
-# 3. 核心分析 (終極防禦版：把美股與 Yahoo 徹底隔離)
+# 3. 核心分析 (甩開 pandas_datareader，改用無敵直接請求法)
 def get_detailed_analysis(symbol):
     try:
         original_input = symbol.upper().strip()
         
-        # 🟢 自動校正代號：把習慣打法翻譯成標準代號
+        # 🟢 自動校正代號
         if original_input == "BTC": original_input = "BTC-USD"
         if original_input == "SNP": original_input = "SPY"  # SNP 自動校正為標普500 ETF
         
         symbol = original_input
         is_tw = ".TW" in symbol
         df = pd.DataFrame()
-        name = symbol  # 美股預設名稱直接等於代號，絕對不查 Yahoo
+        name = symbol  
         
-        # 🌟 絕對隔離區 1：美股、ETF、加密貨幣 -> 100% 只准走 Stooq
+        # 🌟 絕對隔離區 1：美股、ETF、加密貨幣 -> 直接從 Stooq 官方 CSV 扒資料！
         if not is_tw:
-            import pandas_datareader.data as web
             if "-USD" in symbol:
-                stooq_symbol = symbol.replace("-USD", "USD").upper() + ".CC"
+                stooq_code = symbol.replace("-USD", "USD").upper() + ".CC"
             else:
-                stooq_symbol = f"{symbol}.US"
+                stooq_code = f"{symbol}.US"
                 
-            # 建立時間回溯防線：防週末、防連假
-            for days_back in [0, 1, 2, 3, 4, 5]:
-                try:
-                    time.sleep(0.3)
-                    end_date = datetime.now() - timedelta(days=days_back)
-                    start_date = end_date - timedelta(days=3 * 365)
-                    
-                    stooq_df = web.DataReader(stooq_symbol, 'stooq', start_date, end_date)
-                    if stooq_df is not None and not stooq_df.empty:
-                        df = stooq_df.copy()
-                        df.index.name = 'Date'
-                        df = df.sort_index(ascending=True)  # 時間由舊到新
-                        df = df.rename(columns={'Open': 'Open', 'High': 'High', 'Low': 'Low', 'Close': 'Close', 'Volume': 'Volume'})
-                        break  # 成功抓到，跳出迴圈
-                except:
-                    continue  # 失敗則繼續往前推一天找資料
+            # 直接下載 Stooq 的 CSV 檔案，不透過任何二手套件
+            csv_url = f"https://stooq.com/q/d/l/?s={stooq_code}&i=d"
             
-            # 🔥 把門焊死：Stooq 如果還是抓不到，直接報錯，絕對不准去 yfinance！
+            try:
+                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+                response = requests.get(csv_url, headers=headers, timeout=10)
+                
+                if response.status_code == 200 and len(response.content) > 100:
+                    # 直接把 CSV 轉成 Pandas DataFrame
+                    stooq_df = pd.read_csv(io.StringIO(response.text))
+                    
+                    if not stooq_df.empty and 'Close' in stooq_df.columns:
+                        # 整理欄位
+                        stooq_df['Date'] = pd.to_datetime(stooq_df['Date'])
+                        stooq_df.set_index('Date', inplace=True)
+                        stooq_df = stooq_df.sort_index(ascending=True) # 時間由舊到新
+                        df = stooq_df.tail(252 * 3).copy() # 取近三年的資料
+            except Exception as csv_err:
+                print(f"CSV 下載失敗: {csv_err}")
+            
+            # 🔥 Stooq 如果還是抓不到，直接報錯，絕對不准去觸碰 Yahoo 線！
             if df.empty:
-                return f"❌ 數據庫目前無法取得美股 {symbol} 的資料，請檢查代號是否正確。", None, None
+                return f"❌ 數據庫目前無法取得美股 {symbol} 的資料，請檢查代號是否正確（例如標普500請輸入 SPY）。", None, None
 
-        # 🌟 絕對隔離區 2：只有台灣股票 (.TW) 才可以走 yfinance 路線
+        # 🌟 絕對隔離區 2：只有台灣股票 (.TW) 才可以走 yfinance 路線 (台股不會被限流)
         else:
             try:
                 ticker = yf.Ticker(symbol)
@@ -107,7 +109,7 @@ def get_detailed_analysis(symbol):
         p_usd = curr_price if not is_tw else curr_price / 32
         p_twd = curr_price * 32 if not is_tw else curr_price
 
-        # 計算報酬率 (加上安全範圍防呆)
+        # 計算報酬率 
         data_len = len(df)
         idx_252 = min(252, data_len - 1)
         idx_504 = min(504, data_len - 1)
