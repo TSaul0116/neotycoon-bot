@@ -7,10 +7,11 @@ import io
 import warnings
 import threading
 import requests
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # 1. 門牌伺服器 (保持 Render 醒著)
 def run_dummy_server():
@@ -42,25 +43,61 @@ def generate_custom_chart(df, symbol):
         return buf
     except: return None
 
-# 3. 核心分析
+# 3. 核心分析 (雙保險防爆版)
 def get_detailed_analysis(symbol):
     try:
         original_input = symbol.upper()
         if original_input == "BTC": symbol = "BTC-USD"
         symbol = symbol.upper()
         
-        # ⭐ 關鍵修正：讓 yfinance 自己處理通訊
-        ticker = yf.Ticker(symbol)
-        df = ticker.history(period="3y")
-        
-        if df.empty: return f"❌ 找不到 {symbol}", None, None
-
-        # ⭐ 重要：過濾特殊字元，防止 Telegram HTML 解析錯誤
-        raw_name = ticker.info.get('shortName') or symbol
-        name = str(raw_name).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-        
-        curr_price = df['Close'].iloc[-1]
         is_tw = ".TW" in symbol
+        df = pd.DataFrame()
+        
+        # 🌟 第一重保險：美股/加密貨幣優先嘗試走 Stooq 機制，防 Yahoo 限流
+        if not is_tw:
+            try:
+                # 讓請求稍微緩衝 1 秒，假裝是人類
+                time.sleep(1)
+                import pandas_datareader.data as web
+                
+                # Stooq 的美股格式通常是 AAPL.US，加密貨幣則是 BTCUSD.CC
+                if "-USD" in symbol:
+                    stooq_symbol = symbol.replace("-USD", "USD").upper() + ".CC"
+                else:
+                    stooq_symbol = f"{symbol}.US"
+                
+                end_date = datetime.now()
+                start_date = end_date - timedelta(days=3 * 365)
+                
+                # 從 Stooq 撈取資料
+                stooq_df = web.DataReader(stooq_symbol, 'stooq', start_date, end_date)
+                if stooq_df is not None and not stooq_df.empty:
+                    df = stooq_df.sort_index()  # 轉成由舊到新排序
+                    # 統一欄位名稱對齊舊邏輯
+                    df = df.rename(columns={'Open': 'Open', 'High': 'High', 'Low': 'Low', 'Close': 'Close', 'Volume': 'Volume'})
+            except Exception as e:
+                print(f"🔄 Stooq 抓取失敗，準備切換回 Yahoo 備用線: {e}")
+
+        # 🌟 第二重保險：如果 Stooq 沒抓到，或者是台股，就走原來的 yfinance 路線
+        if df.empty:
+            try:
+                ticker = yf.Ticker(symbol)
+                df = ticker.history(period="3y")
+            except Exception as e:
+                return f"❌ 找不到 {symbol} 或 Yahoo 財經正忙，錯誤：{e}", None, None
+        
+        if df.empty: return f"❌ 找不到 {symbol} 的歷史數據", None, None
+
+        # ⭐ 重要：獲取名稱並過濾特殊字元
+        name = symbol
+        try:
+            ticker = yf.Ticker(symbol)
+            raw_name = ticker.info.get('shortName') or symbol
+            name = str(raw_name).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        except:
+            pass
+        
+        curr_price = float(df['Close'].iloc[-1])
         p_usd = curr_price if not is_tw else curr_price / 32
         p_twd = curr_price * 32 if not is_tw else curr_price
 
@@ -85,7 +122,7 @@ def get_detailed_analysis(symbol):
             status, advice = "❌ 賣出", "趨勢轉空，建議減碼"
             forecast = "-10% ~ +2%"
             
-        # ⭐ 最終排版：台幣下移、增加對齊感
+        # ⭐ 最終排版
         report = (
             f"💰 <b>【NeoTycoon 報告】</b>\n"
             f"---------------------------\n"
@@ -146,7 +183,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as final_e:
             await update.message.reply_text(f"❌ 傳送最終失敗：{final_e}")
             
-    await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=wait_msg.message_id)
+    try:
+        await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=wait_msg.message_id)
+    except: pass
 
 # 4. 設定 Bot Menu 選單的功能函式
 async def set_bot_menu(application):
@@ -164,7 +203,7 @@ if __name__ == "__main__":
         # 初始化機器人
         app = ApplicationBuilder().token(TOKEN).build()
         
-        # ⭐ 關鍵：啟動時同步執行「選單設定」
+        # 啟動時同步執行「選單設定」
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
