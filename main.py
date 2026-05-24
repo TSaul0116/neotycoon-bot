@@ -43,12 +43,12 @@ def generate_custom_chart(df, symbol):
         return buf
     except: return None
 
-# 3. 核心分析 (大換血：Finnhub API 毫秒級高速引擎)
+# 3. 核心分析 (100% 安全隱私環境變數版)
 def get_detailed_analysis(symbol):
     try:
         original_input = symbol.upper().strip()
         
-        # 🟢 自動代號校正：打 SNP 直接幫你對齊美股大盤 SPY
+        # 🟢 自動代號校正
         if original_input == "BTC": original_input = "BTC-USD"
         if original_input == "SNP": original_input = "SPY"
         
@@ -57,16 +57,17 @@ def get_detailed_analysis(symbol):
         df = pd.DataFrame()
         name = symbol  
         
-        # 🌟 絕對隔離區 1：美股、ETF、加密貨幣 -> 100% 走 Finnhub 官方直連通道
+        # 🌟 絕對隔離區 1：美股、ETF、加密貨幣 -> 走 Finnhub 官方直連
         if not is_tw:
-            # 🔑 直接鎖定大表哥提供的高級 API Key
-            api_key = "d895h89r01qla01m7ndgd895h89r01qla01m7ne0"
+            # 🛡️ 從 Render 後台讀取安全金鑰，GitHub 上完全不留痕跡
+            api_key = os.getenv("FINNHUB_API_KEY")
+            if not api_key:
+                return "❌ 系統錯誤：Render 後台尚未設定 FINNHUB_API_KEY 環境變數！", None, None
             
             finnhub_symbol = symbol
             if "-USD" in symbol:
                 finnhub_symbol = "BINANCE:" + symbol.replace("-USD", "USDT")
                 
-            # 抓取過去 3 年的時間戳記 (用來算 60、240 天長期均線)
             end_ts = int(time.time())
             start_ts = end_ts - (3 * 365 * 24 * 60 * 60)
             
@@ -76,7 +77,6 @@ def get_detailed_analysis(symbol):
                 response = requests.get(url, timeout=5)
                 data = response.json()
                 
-                # 如果 Finnhub 成功回傳資料
                 if data.get('s') == 'ok':
                     df_data = {
                         'Date': [datetime.fromtimestamp(t) for t in data['t']],
@@ -90,13 +90,12 @@ def get_detailed_analysis(symbol):
                     finnhub_df.set_index('Date', inplace=True)
                     df = finnhub_df.sort_index(ascending=True).copy()
             except Exception as e:
-                print(f"🚀 Finnhub 連線有狀況: {e}")
+                print(f"🚀 Finnhub 連線錯誤: {e}")
                 
-            # 🔥 焊死通道：只要是美股沒抓到，直接回報失敗，絕對不准去 Yahoo 備用線送人頭，確保 IP 安全
             if df.empty:
-                return f"❌ 數據庫目前無法取得美股 {symbol} 的資料，請確認代號是否輸入正確（例如：NVDA、TSLA、SPY）。", None, None
+                return f"❌ 數據庫目前無法取得美股 {symbol} 的資料，請確認代號是否正確（例如：NVDA、TSLA、SPY）。", None, None
 
-        # 🌟 絕對隔離區 2：只有台灣股票 (.TW) 才可以走 yfinance 路線 (台股完全不鎖 IP，安全快速)
+        # 🌟 絕對隔離區 2：只有台灣股票 (.TW) 走 yfinance 路線 (台股完全不鎖 IP)
         else:
             try:
                 ticker = yf.Ticker(symbol)
@@ -117,7 +116,7 @@ def get_detailed_analysis(symbol):
         p_usd = curr_price if not is_tw else curr_price / 32
         p_twd = curr_price * 32 if not is_tw else curr_price
 
-        # 計算報酬率 (安全防呆範圍)
+        # 計算報酬率
         data_len = len(df)
         idx_252 = min(252, data_len - 1)
         idx_504 = min(504, data_len - 1)
@@ -165,7 +164,6 @@ def get_detailed_analysis(symbol):
                     [InlineKeyboardButton("Investopedia", url=f"https://www.investopedia.com/search?q={clean_sym}")],
                     [InlineKeyboardButton("Yahoo Finance", url=f"https://finance.yahoo.com/quote/{symbol}")]]
 
-        # 台股和比特幣使用內部畫圖，其他美股走 finviz 外鏈趨勢圖
         img = generate_custom_chart(df, symbol) if (is_tw or "BINANCE:" in symbol) else f"https://charts2.finviz.com/chart.ashx?t={clean_sym}&ty=c&ta=1&p=d"
         return report, InlineKeyboardMarkup(keyboard), img
     except Exception as e: return f"⚠️ 分析錯誤：{e}", None, None
