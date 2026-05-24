@@ -27,7 +27,7 @@ def run_dummy_server():
 
 threading.Thread(target=run_dummy_server, daemon=True).start()
 
-# 2. 畫圖功能
+# 2. 內建畫圖功能 (留給台股、比特幣等特殊代號使用)
 def generate_custom_chart(df, symbol):
     try:
         plt.figure(figsize=(10, 5))
@@ -42,7 +42,7 @@ def generate_custom_chart(df, symbol):
         return buf
     except: return None
 
-# 3. 核心分析 (回歸最初版：全部單純走 yfinance，加上防斷線重試機制)
+# 3. 核心分析 (最初 yfinance 版 + 完美整合 Finviz 圖片)
 def get_detailed_analysis(symbol):
     try:
         original_input = symbol.upper().strip()
@@ -56,17 +56,15 @@ def get_detailed_analysis(symbol):
         df = pd.DataFrame()
         name = symbol  
         
-        # 使用最初版 yfinance 機制，加上重試防線
+        # 走最原始的 yfinance 機制，加上 3 次重試保險
         ticker = yf.Ticker(symbol)
-        
-        # 嘗試抓取資料，如果失敗就多試幾次
         for attempt in range(3):
             try:
                 df = ticker.history(period="3y")
                 if not df.empty and len(df) >= 10:
                     break
             except:
-                time.sleep(1) # 失敗了等一秒再試
+                time.sleep(1) # 失敗的話等一秒再試
                 
         # 嘗試抓取股票名稱
         try:
@@ -131,7 +129,13 @@ def get_detailed_analysis(symbol):
                     [InlineKeyboardButton("Investopedia", url=f"https://www.investopedia.com/search?q={clean_sym}")],
                     [InlineKeyboardButton("Yahoo Finance", url=f"https://finance.yahoo.com/quote/{symbol}")]]
 
-        img = generate_custom_chart(df, symbol)
+        # ✨【圖片智慧分流修改處】
+        # 如果是台股或加密貨幣，用內建畫圖；普通美股（如 NVDA, SPY）一律改回用 Finviz 網址抓圖！
+        if is_tw or "-USD" in symbol:
+            img = generate_custom_chart(df, symbol)
+        else:
+            img = f"https://charts2.finviz.com/chart.ashx?t={clean_sym}&ty=c&ta=1&p=d"
+            
         return report, InlineKeyboardMarkup(keyboard), img
     except Exception as e: return f"⚠️ 分析錯誤：{e}", None, None
 
