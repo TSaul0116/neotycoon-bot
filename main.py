@@ -6,7 +6,6 @@ import matplotlib.pyplot as plt
 import io
 import warnings
 import threading
-import requests
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -43,12 +42,12 @@ def generate_custom_chart(df, symbol):
         return buf
     except: return None
 
-# 3. 核心分析 (大升級：全面採用 WSJ 官方免密碼高速通道)
+# 3. 核心分析 (回歸最初版：全部單純走 yfinance，加上防斷線重試機制)
 def get_detailed_analysis(symbol):
     try:
         original_input = symbol.upper().strip()
         
-        # 🟢 自動代號校正
+        # 自動代號校正
         if original_input == "BTC": original_input = "BTC-USD"
         if original_input == "SNP": original_input = "SPY"
         
@@ -57,73 +56,34 @@ def get_detailed_analysis(symbol):
         df = pd.DataFrame()
         name = symbol  
         
-        # 🌟 絕對隔離區 1：美股、ETF、加密貨幣 -> 全面走 WSJ 官方高速直連 (免 Key 且不鎖 IP)
-        if not is_tw:
-            try:
-                # 判斷是加密貨幣還是普通股票/ETF，調整 WSJ 的網址分類
-                if "-USD" in symbol:
-                    clean_sym = symbol.replace("-USD", "")
-                    wsj_url = f"https://www.wsj.com/market-data/quotes/crypto/{clean_sym}USD/historical-prices/download?MOD_DATA=alpha&num_rows=800&range_days=1100"
-                else:
-                    # 普通美股或 ETF 統一走這個接口
-                    wsj_url = f"https://www.wsj.com/market-data/quotes/etf/{symbol}/historical-prices/download?MOD_DATA=alpha&num_rows=800&range_days=1100"
-                
-                headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-                res = requests.get(wsj_url, headers=headers, timeout=6)
-                
-                # 如果這個分類抓不到，嘗試切換到股票分類接口 (WSJ 個股與 ETF 接口有時通用)
-                if res.status_code != 200 or "Date" not in res.text:
-                    if "-USD" not in symbol:
-                        wsj_url = f"https://www.wsj.com/market-data/quotes/fx/{symbol}/historical-prices/download?MOD_DATA=alpha&num_rows=800&range_days=1100"
-                        res = requests.get(wsj_url, headers=headers, timeout=6)
-                
-                if res.status_code == 200 and "Date" in res.text:
-                    wsj_df = pd.read_csv(io.StringIO(res.text))
-                    wsj_df.columns = [c.strip() for c in wsj_df.columns]
-                    wsj_df['Date'] = pd.to_datetime(wsj_df['Date'])
-                    wsj_df.set_index('Date', inplace=True)
-                    df = wsj_df.sort_index(ascending=True).copy()
-                    
-                    # 處理華爾街日報歷史資料欄位名稱的相容性
-                    if 'Close/Last' in df.columns:
-                        df.rename(columns={'Close/Last': 'Close'}, inplace=True)
-                    
-                    # 確保必要欄位都存在
-                    required_cols = ['Open', 'High', 'Low', 'Close']
-                    for col in required_cols:
-                        if col in df.columns:
-                            df[col] = pd.to_numeric(df[col], errors='coerce')
-                            
-                    df.dropna(subset=['Close'], inplace=True)
-            except Exception as e:
-                print(f"🚀 WSJ 官方通道出錯: {e}")
-                
-            # 🔥 焊死防線
-            if df.empty:
-                return f"❌ 數據庫目前無法取得美股 {symbol} 的資料，請確認代號是否正確（例如：NVDA、TSLA、SPY）。", None, None
-
-        # 🌟 絕對隔離區 2：只有台灣股票 (.TW) 走 yfinance 路線 (台股完全不鎖 IP)
-        else:
-            try:
-                ticker = yf.Ticker(symbol)
-                df = ticker.history(period="3y")
-                try:
-                    raw_name = ticker.info.get('shortName') or symbol
-                    name = str(raw_name).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-                except:
-                    pass
-            except Exception as e:
-                return f"❌ 找不到台股 {symbol} 或 Yahoo 財經正忙，錯誤：{e}", None, None
+        # 使用最初版 yfinance 機制，加上重試防線
+        ticker = yf.Ticker(symbol)
         
+        # 嘗試抓取資料，如果失敗就多試幾次
+        for attempt in range(3):
+            try:
+                df = ticker.history(period="3y")
+                if not df.empty and len(df) >= 10:
+                    break
+            except:
+                time.sleep(1) # 失敗了等一秒再試
+                
+        # 嘗試抓取股票名稱
+        try:
+            raw_name = ticker.info.get('shortName') or symbol
+            name = str(raw_name).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        except:
+            name = symbol
+
         # 數據長度防呆檢查
         if df.empty or len(df) < 10: 
-            return f"❌ 找不到 {symbol} 的歷史數據或資料量不足", None, None
+            return f"❌ 目前無法取得 {symbol} 的歷史數據，可能是網路繁忙，請稍後再試一次！", None, None
 
         curr_price = float(df['Close'].iloc[-1])
         p_usd = curr_price if not is_tw else curr_price / 32
         p_twd = curr_price * 32 if not is_tw else curr_price
 
-        # 計算報酬率 (安全範圍防呆)
+        # 計算報酬率
         data_len = len(df)
         idx_252 = min(252, data_len - 1)
         idx_504 = min(504, data_len - 1)
@@ -171,7 +131,6 @@ def get_detailed_analysis(symbol):
                     [InlineKeyboardButton("Investopedia", url=f"https://www.investopedia.com/search?q={clean_sym}")],
                     [InlineKeyboardButton("Yahoo Finance", url=f"https://finance.yahoo.com/quote/{symbol}")]]
 
-        # 全部改走內部畫圖，擺脫第三方外鏈失效的風險
         img = generate_custom_chart(df, symbol)
         return report, InlineKeyboardMarkup(keyboard), img
     except Exception as e: return f"⚠️ 分析錯誤：{e}", None, None
