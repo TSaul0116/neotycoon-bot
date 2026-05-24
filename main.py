@@ -43,60 +43,65 @@ def generate_custom_chart(df, symbol):
         return buf
     except: return None
 
-# 3. 核心分析 (智慧分流高鐵引擎：個股走 Finnhub / 大盤黃金走 WSJ 官方直連)
+# 3. 核心分析 (內建聽診器版本)
 def get_detailed_analysis(symbol):
     try:
         original_input = symbol.upper().strip()
         
-        # 🟢 自動代號校正
         if original_input == "BTC": original_input = "BTC-USD"
-        if original_input == "SNP": original_input = "SPY"  # 大表哥專屬：打 SNP 自動校正為 SPY
+        if original_input == "SNP": original_input = "SPY"
         
         symbol = original_input
         is_tw = ".TW" in symbol
         df = pd.DataFrame()
         name = symbol  
         
+        # 紀錄抓取過程中的錯誤日誌，等一下回報給你
+        debug_logs = []
+        
         # 🌟 絕對隔離區 1：美股、ETF、加密貨幣
         if not is_tw:
-            # 💡 特殊分流：SPY 和 GLD 因為 Finnhub 免費版不支援，改走 WSJ 官方免 Key 高速通道
+            # 💡 分流 A：SPY 和 GLD 走 WSJ 通道
             if symbol in ["SPY", "GLD"]:
                 try:
-                    # 抓取華爾街日報公開歷史數據 (回溯約3年)
                     wsj_url = f"https://www.wsj.com/market-data/quotes/etf/{symbol}/historical-prices/download?MOD_DATA=alpha&num_rows=800&range_days=1100"
                     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
                     res = requests.get(wsj_url, headers=headers, timeout=5)
                     
                     if res.status_code == 200 and "Date" in res.text:
                         wsj_df = pd.read_csv(io.StringIO(res.text))
-                        # 清理欄位空格
                         wsj_df.columns = [c.strip() for c in wsj_df.columns]
                         wsj_df['Date'] = pd.to_datetime(wsj_df['Date'])
                         wsj_df.set_index('Date', inplace=True)
                         wsj_df = wsj_df.sort_index(ascending=True)
                         
-                        # 華爾街日報的欄位叫 'Close' 或 'Close/Last'，做個相容
                         if 'Close' in wsj_df.columns:
                             df = wsj_df[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
                         elif 'Close/Last' in wsj_df.columns:
                             wsj_df.rename(columns={'Close/Last': 'Close'}, inplace=True)
                             df = wsj_df[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
+                    else:
+                        debug_logs.append(f"WSJ 失敗狀態碼: {res.status_code}")
                 except Exception as e:
-                    print(f"🚀 WSJ 官方通道嘗試失敗: {e}")
+                    debug_logs.append(f"WSJ 連線異常: {str(e)}")
 
-            # 如果不是 SPY/GLD，或者 WSJ 沒抓到，一律走標準 Finnhub API 個股通道
+            # 分流 B：一般個股，或者 WSJ 沒抓成功時的備用 Finnhub 路線
             if df.empty:
                 api_key = os.getenv("FINNHUB_API_KEY")
                 if not api_key:
-                    return "❌ 系統錯誤：Render 後台尚未設定 FINNHUB_API_KEY 環境變數！", None, None
+                    return "❌ 系統錯誤：Render 後台完全找不到 FINNHUB_API_KEY！請檢查 Environment 設定。", None, None
+                
+                # 順便幫大表哥檢查是不是複製密碼時前後多留了空白鍵
+                if api_key.strip() != api_key:
+                    return "❌ 系統錯誤：你的 FINNHUB_API_KEY 前後有隱形空白鍵，請去 Render 後台重新填寫並儲存！", None, None
                 
                 if "-USD" in symbol:
                     finnhub_symbol = "binance:" + symbol.replace("-USD", "usdt").lower()
                 else:
-                    finnhub_symbol = symbol.lower() # 轉成小寫，精準解鎖 Finnhub 資料庫
+                    finnhub_symbol = symbol.lower()
                     
                 end_ts = int(time.time())
-                start_ts = end_ts - (3 * 365 * 24 * 60 * 60) # 3 年前
+                start_ts = end_ts - (3 * 365 * 24 * 60 * 60)
                 
                 url = f"https://finnhub.io/api/v1/stock/candle?symbol={finnhub_symbol}&resolution=D&from={start_ts}&to={end_ts}&token={api_key}"
                 
@@ -116,14 +121,25 @@ def get_detailed_analysis(symbol):
                         finnhub_df = pd.DataFrame(df_data)
                         finnhub_df.set_index('Date', inplace=True)
                         df = finnhub_df.sort_index(ascending=True).copy()
+                    else:
+                        # 這裡最關鍵！如果密碼錯，Finnhub 會回傳原因
+                        debug_logs.append(f"Finnhub 回報狀態: {data.get('s')} / 訊息: {data.get('error', '無')}")
                 except Exception as e:
-                    print(f"🚀 Finnhub 個股通道出錯: {e}")
+                    debug_logs.append(f"Finnhub 連線異常: {str(e)}")
                 
-            # 🔥 焊死防線：如果都抓不到，直接回報失敗，絕不去 yfinance 送人頭
+            # 🔥 如果到這裡還是空的，就把上面收集到的 debug_logs 全部噴出來給你看
             if df.empty:
-                return f"❌ 數據庫目前無法取得美股 {symbol} 的資料，請確認代號是否輸入正確（例如：NVDA、AAPL、TSLA）。", None, None
+                err_report = (
+                    f"❌ 數據庫無法取得美股 {symbol} 資料。\n\n"
+                    f"🔬 <b>【老弟幫你裝的聽診器診斷報告】</b>\n"
+                    f"---------------------------\n"
+                    f"原因排查如下：\n" + "\n".join([f"⚠️ {log}" for log in debug_logs]) + "\n"
+                    f"---------------------------\n"
+                    f"💡 密鑰後台名稱：<code>FINNHUB_API_KEY</code>"
+                )
+                return err_report, None, None
 
-        # 🌟 絕對隔離區 2：只有台灣股票 (.TW) 走 yfinance 路線 (台股完全不鎖 IP)
+        # 🌟 絕對隔離區 2：台灣股票 (.TW)
         else:
             try:
                 ticker = yf.Ticker(symbol)
@@ -144,7 +160,6 @@ def get_detailed_analysis(symbol):
         p_usd = curr_price if not is_tw else curr_price / 32
         p_twd = curr_price * 32 if not is_tw else curr_price
 
-        # 計算報酬率 (安全範圍防呆)
         data_len = len(df)
         idx_252 = min(252, data_len - 1)
         idx_504 = min(504, data_len - 1)
@@ -152,7 +167,6 @@ def get_detailed_analysis(symbol):
         ret_2025 = ((df['Close'].iloc[-1] / df['Close'].iloc[-idx_252]) - 1) * 100 if data_len > idx_252 else 0
         ret_2024 = ((df['Close'].iloc[-idx_252] / df['Close'].iloc[-idx_504]) - 1) * 100 if data_len > idx_504 else 0
 
-        # 計算均線策略
         df['SMA60'] = df['Close'].rolling(window=min(60, data_len)).mean()
         df['SMA240'] = df['Close'].rolling(window=min(240, data_len)).mean()
         l60, l240 = df['SMA60'].iloc[-1], df['SMA240'].iloc[-1]
@@ -170,7 +184,6 @@ def get_detailed_analysis(symbol):
             status, advice = "❌ 賣出", "趨勢轉空，建議減碼"
             forecast = "-10% ~ +2%"
             
-        # 最終排版
         report = (
             f"💰 <b>【NeoTycoon 報告】</b>\n"
             f"---------------------------\n"
@@ -192,7 +205,6 @@ def get_detailed_analysis(symbol):
                     [InlineKeyboardButton("Investopedia", url=f"https://www.investopedia.com/search?q={clean_sym}")],
                     [InlineKeyboardButton("Yahoo Finance", url=f"https://finance.yahoo.com/quote/{symbol}")]]
 
-        # 台股、大盤、黃金、比特幣使用內部畫圖，普通美股走 finviz 外鏈趨勢圖
         img = generate_custom_chart(df, symbol) if (is_tw or symbol in ["SPY", "GLD"] or "BINANCE:" in symbol) else f"https://charts2.finviz.com/chart.ashx?t={clean_sym}&ty=c&ta=1&p=d"
         return report, InlineKeyboardMarkup(keyboard), img
     except Exception as e: return f"⚠️ 分析錯誤：{e}", None, None
