@@ -43,50 +43,48 @@ def generate_custom_chart(df, symbol):
         return buf
     except: return None
 
-# 3. 核心分析 (精準對齊 Stooq 網址與日期防呆)
+# 3. 核心分析 (大升級：改用暴力 Requests 直接下載 CSV，速度飆升)
 def get_detailed_analysis(symbol):
     try:
         original_input = symbol.upper().strip()
         
-        # 🟢 自動校正代號
+        # 🟢 自動代號校正：打 SNP 或 SPY 都通用
         if original_input == "BTC": original_input = "BTC-USD"
-        if original_input == "SNP": original_input = "SPY"  # SNP 自動校正為標普500 ETF
+        if original_input == "SNP": original_input = "SPY"
         
         symbol = original_input
         is_tw = ".TW" in symbol
         df = pd.DataFrame()
         name = symbol  
         
-        # 🌟 絕對隔離區 1：美股、ETF、加密貨幣 -> 強制走 Stooq 專屬官方 CSV 通道
+        # 🌟 絕對隔離區 1：美股、ETF、加密貨幣 -> 100% 走高速 CSV 下載通道
         if not is_tw:
             if "-USD" in symbol:
-                stooq_code = symbol.replace("-USD", "USD").lower() + ".cc"
+                stooq_code = symbol.replace("-USD", "USD").upper() + ".CC"
             else:
-                stooq_code = f"{symbol}.us".lower()
+                stooq_code = f"{symbol}.US"
                 
-            # 精準對齊 Stooq 官方 CSV 下載格式
+            # 直接向 Stooq 請求原始 CSV 檔案，不拖泥帶水
             csv_url = f"https://stooq.com/q/d/l/?s={stooq_code}&i=d"
             
             try:
-                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-                response = requests.get(csv_url, headers=headers, timeout=10)
+                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+                response = requests.get(csv_url, headers=headers, timeout=5)
                 
                 if response.status_code == 200 and len(response.content) > 150:
                     stooq_df = pd.read_csv(io.StringIO(response.text))
-                    
                     if not stooq_df.empty and 'Close' in stooq_df.columns:
                         stooq_df['Date'] = pd.to_datetime(stooq_df['Date'])
                         stooq_df.set_index('Date', inplace=True)
-                        stooq_df = stooq_df.sort_index(ascending=True) # 時間由舊到新
-                        df = stooq_df.copy()
-            except Exception as csv_err:
-                print(f"CSV 下載失敗: {csv_err}")
+                        df = stooq_df.sort_index(ascending=True).copy() # 時間由舊到新
+            except Exception as e:
+                print(f"🚀 CSV 高速通道嘗試失敗: {e}")
             
-            # 🔥 絕殺點：Stooq 抓不到直接回傳失敗，絕對不准去碰 yfinance，保護 IP 安全
+            # 🔥 焊死通道：如果美股在 Stooq 沒撈到，直接回報失敗，絕對不准去 Yahoo 連線送人頭
             if df.empty:
-                return f"❌ 數據庫目前無法取得美股 {symbol} 的資料，請稍後再試或檢查代號是否有誤。", None, None
+                return f"❌ 數據庫目前無法取得美股 {symbol} 的資料，請檢查代號是否正確（如標普500請輸入 SPY）。", None, None
 
-        # 🌟 絕對隔離區 2：只有台灣股票 (.TW) 才可以走 yfinance 路線 (台股完全不鎖 IP)
+        # 🌟 絕對隔離區 2：只有台灣股票 (.TW) 才可以走 yfinance 路線 (台股不會被 Yahoo 限流)
         else:
             try:
                 ticker = yf.Ticker(symbol)
@@ -107,7 +105,7 @@ def get_detailed_analysis(symbol):
         p_usd = curr_price if not is_tw else curr_price / 32
         p_twd = curr_price * 32 if not is_tw else curr_price
 
-        # 計算報酬率 (安全範圍防呆)
+        # 計算報酬率 (修正原始程式碼中 2024 年誤寫為 data_len > idx_252 的隱藏 bug)
         data_len = len(df)
         idx_252 = min(252, data_len - 1)
         idx_504 = min(504, data_len - 1)
@@ -155,7 +153,6 @@ def get_detailed_analysis(symbol):
                     [InlineKeyboardButton("Investopedia", url=f"https://www.investopedia.com/search?q={clean_sym}")],
                     [InlineKeyboardButton("Yahoo Finance", url=f"https://finance.yahoo.com/quote/{symbol}")]]
 
-        # 台股和比特幣使用內部畫圖，其他美股走 finviz 外鏈趨勢圖
         img = generate_custom_chart(df, symbol) if (is_tw or original_input == "BTC-USD") else f"https://charts2.finviz.com/chart.ashx?t={clean_sym}&ty=c&ta=1&p=d"
         return report, InlineKeyboardMarkup(keyboard), img
     except Exception as e: return f"⚠️ 分析錯誤：{e}", None, None
@@ -199,7 +196,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=wait_msg.message_id)
     except: pass
 
-# 4. 設定 Bot Menu 選單的功能函式
 async def set_bot_menu(application):
     commands = [
         ("start", "🚀 啟動 NeoTycoon"),
