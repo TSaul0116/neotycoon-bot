@@ -43,63 +43,87 @@ def generate_custom_chart(df, symbol):
         return buf
     except: return None
 
-# 3. 核心分析 (高鐵級速度：全面改用 Finnhub 官方直連通道)
+# 3. 核心分析 (智慧分流高鐵引擎：個股走 Finnhub / 大盤黃金走 WSJ 官方直連)
 def get_detailed_analysis(symbol):
     try:
         original_input = symbol.upper().strip()
         
         # 🟢 自動代號校正
         if original_input == "BTC": original_input = "BTC-USD"
-        if original_input == "SNP": original_input = "SPY"  # 大表哥，打 SNP 自動幫你查標準標普500大盤 ETF
+        if original_input == "SNP": original_input = "SPY"  # 大表哥專屬：打 SNP 自動校正為 SPY
         
         symbol = original_input
         is_tw = ".TW" in symbol
         df = pd.DataFrame()
         name = symbol  
         
-        # 🌟 絕對隔離區 1：美股、ETF、加密貨幣 -> 走 Finnhub API 毫秒級直連
+        # 🌟 絕對隔離區 1：美股、ETF、加密貨幣
         if not is_tw:
-            api_key = os.getenv("FINNHUB_API_KEY")
-            if not api_key:
-                return "❌ 系統錯誤：Render 後台尚未設定 FINNHUB_API_KEY 環境變數！", None, None
-            
-            # 🔥 關鍵修正：Finnhub 的代號與後綴必須嚴格遵守小寫格式
-            if "-USD" in symbol:
-                finnhub_symbol = "binance:" + symbol.replace("-USD", "usdt").lower()
-            else:
-                finnhub_symbol = symbol.lower() # 轉成小寫，精準解鎖 Finnhub 資料庫
-                
-            # 計算歷史時間範圍（抓足夠的天數來算 240 均線）
-            end_ts = int(time.time())
-            start_ts = end_ts - (3 * 365 * 24 * 60 * 60) # 3 年前
-            
-            url = f"https://finnhub.io/api/v1/stock/candle?symbol={finnhub_symbol}&resolution=D&from={start_ts}&to={end_ts}&token={api_key}"
-            
-            try:
-                response = requests.get(url, timeout=5)
-                data = response.json()
-                
-                # Finnhub 狀態成功且有資料
-                if data.get('s') == 'ok':
-                    df_data = {
-                        'Date': [datetime.fromtimestamp(t) for t in data['t']],
-                        'Open': data['o'],
-                        'High': data['h'],
-                        'Low': data['l'],
-                        'Close': data['c'],
-                        'Volume': data['v']
-                    }
-                    finnhub_df = pd.DataFrame(df_data)
-                    finnhub_df.set_index('Date', inplace=True)
-                    df = finnhub_df.sort_index(ascending=True).copy()
-            except Exception as e:
-                print(f"🚀 Finnhub 高速通道出錯: {e}")
-                
-            # 🔥 焊死防線：美股如果抓不到，直接回報失敗，打死不准去碰 yfinance 備用線，保護 IP 安全
-            if df.empty:
-                return f"❌ 數據庫目前無法取得美股 {symbol} 的資料，請確認代號是否輸入正確（例如：NVDA、AAPL、SPY）。", None, None
+            # 💡 特殊分流：SPY 和 GLD 因為 Finnhub 免費版不支援，改走 WSJ 官方免 Key 高速通道
+            if symbol in ["SPY", "GLD"]:
+                try:
+                    # 抓取華爾街日報公開歷史數據 (回溯約3年)
+                    wsj_url = f"https://www.wsj.com/market-data/quotes/etf/{symbol}/historical-prices/download?MOD_DATA=alpha&num_rows=800&range_days=1100"
+                    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+                    res = requests.get(wsj_url, headers=headers, timeout=5)
+                    
+                    if res.status_code == 200 and "Date" in res.text:
+                        wsj_df = pd.read_csv(io.StringIO(res.text))
+                        # 清理欄位空格
+                        wsj_df.columns = [c.strip() for c in wsj_df.columns]
+                        wsj_df['Date'] = pd.to_datetime(wsj_df['Date'])
+                        wsj_df.set_index('Date', inplace=True)
+                        wsj_df = wsj_df.sort_index(ascending=True)
+                        
+                        # 華爾街日報的欄位叫 'Close' 或 'Close/Last'，做個相容
+                        if 'Close' in wsj_df.columns:
+                            df = wsj_df[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
+                        elif 'Close/Last' in wsj_df.columns:
+                            wsj_df.rename(columns={'Close/Last': 'Close'}, inplace=True)
+                            df = wsj_df[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
+                except Exception as e:
+                    print(f"🚀 WSJ 官方通道嘗試失敗: {e}")
 
-        # 🌟 絕對隔離區 2：只有台灣股票 (.TW) 才允許走 yfinance 路線 (台股完全不鎖 IP)
+            # 如果不是 SPY/GLD，或者 WSJ 沒抓到，一律走標準 Finnhub API 個股通道
+            if df.empty:
+                api_key = os.getenv("FINNHUB_API_KEY")
+                if not api_key:
+                    return "❌ 系統錯誤：Render 後台尚未設定 FINNHUB_API_KEY 環境變數！", None, None
+                
+                if "-USD" in symbol:
+                    finnhub_symbol = "binance:" + symbol.replace("-USD", "usdt").lower()
+                else:
+                    finnhub_symbol = symbol.lower() # 轉成小寫，精準解鎖 Finnhub 資料庫
+                    
+                end_ts = int(time.time())
+                start_ts = end_ts - (3 * 365 * 24 * 60 * 60) # 3 年前
+                
+                url = f"https://finnhub.io/api/v1/stock/candle?symbol={finnhub_symbol}&resolution=D&from={start_ts}&to={end_ts}&token={api_key}"
+                
+                try:
+                    response = requests.get(url, timeout=5)
+                    data = response.json()
+                    
+                    if data.get('s') == 'ok':
+                        df_data = {
+                            'Date': [datetime.fromtimestamp(t) for t in data['t']],
+                            'Open': data['o'],
+                            'High': data['h'],
+                            'Low': data['l'],
+                            'Close': data['c'],
+                            'Volume': data['v']
+                        }
+                        finnhub_df = pd.DataFrame(df_data)
+                        finnhub_df.set_index('Date', inplace=True)
+                        df = finnhub_df.sort_index(ascending=True).copy()
+                except Exception as e:
+                    print(f"🚀 Finnhub 個股通道出錯: {e}")
+                
+            # 🔥 焊死防線：如果都抓不到，直接回報失敗，絕不去 yfinance 送人頭
+            if df.empty:
+                return f"❌ 數據庫目前無法取得美股 {symbol} 的資料，請確認代號是否輸入正確（例如：NVDA、AAPL、TSLA）。", None, None
+
+        # 🌟 絕對隔離區 2：只有台灣股票 (.TW) 走 yfinance 路線 (台股完全不鎖 IP)
         else:
             try:
                 ticker = yf.Ticker(symbol)
@@ -168,8 +192,8 @@ def get_detailed_analysis(symbol):
                     [InlineKeyboardButton("Investopedia", url=f"https://www.investopedia.com/search?q={clean_sym}")],
                     [InlineKeyboardButton("Yahoo Finance", url=f"https://finance.yahoo.com/quote/{symbol}")]]
 
-        # 台股和比特幣使用內部畫圖，其他美股走 finviz 外鏈趨勢圖
-        img = generate_custom_chart(df, symbol) if (is_tw or original_input == "BTC") else f"https://charts2.finviz.com/chart.ashx?t={clean_sym}&ty=c&ta=1&p=d"
+        # 台股、大盤、黃金、比特幣使用內部畫圖，普通美股走 finviz 外鏈趨勢圖
+        img = generate_custom_chart(df, symbol) if (is_tw or symbol in ["SPY", "GLD"] or "BINANCE:" in symbol) else f"https://charts2.finviz.com/chart.ashx?t={clean_sym}&ty=c&ta=1&p=d"
         return report, InlineKeyboardMarkup(keyboard), img
     except Exception as e: return f"⚠️ 分析錯誤：{e}", None, None
 
