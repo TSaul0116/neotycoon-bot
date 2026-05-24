@@ -43,33 +43,35 @@ def generate_custom_chart(df, symbol):
         return buf
     except: return None
 
-# 3. 核心分析 (100% 安全隱私環境變數版)
+# 3. 核心分析 (高鐵級速度：全面改用 Finnhub 官方直連通道)
 def get_detailed_analysis(symbol):
     try:
         original_input = symbol.upper().strip()
         
         # 🟢 自動代號校正
         if original_input == "BTC": original_input = "BTC-USD"
-        if original_input == "SNP": original_input = "SPY"
+        if original_input == "SNP": original_input = "SPY"  # 大表哥，打 SNP 自動幫你查標準標普500大盤 ETF
         
         symbol = original_input
         is_tw = ".TW" in symbol
         df = pd.DataFrame()
         name = symbol  
         
-        # 🌟 絕對隔離區 1：美股、ETF、加密貨幣 -> 走 Finnhub 官方直連
+        # 🌟 絕對隔離區 1：美股、ETF、加密貨幣 -> 走 Finnhub API 毫秒級直連
         if not is_tw:
-            # 🛡️ 從 Render 後台讀取安全金鑰，GitHub 上完全不留痕跡
             api_key = os.getenv("FINNHUB_API_KEY")
             if not api_key:
                 return "❌ 系統錯誤：Render 後台尚未設定 FINNHUB_API_KEY 環境變數！", None, None
             
-            finnhub_symbol = symbol
+            # 🔥 關鍵修正：Finnhub 的代號與後綴必須嚴格遵守小寫格式
             if "-USD" in symbol:
-                finnhub_symbol = "BINANCE:" + symbol.replace("-USD", "USDT")
+                finnhub_symbol = "binance:" + symbol.replace("-USD", "usdt").lower()
+            else:
+                finnhub_symbol = symbol.lower() # 轉成小寫，精準解鎖 Finnhub 資料庫
                 
+            # 計算歷史時間範圍（抓足夠的天數來算 240 均線）
             end_ts = int(time.time())
-            start_ts = end_ts - (3 * 365 * 24 * 60 * 60)
+            start_ts = end_ts - (3 * 365 * 24 * 60 * 60) # 3 年前
             
             url = f"https://finnhub.io/api/v1/stock/candle?symbol={finnhub_symbol}&resolution=D&from={start_ts}&to={end_ts}&token={api_key}"
             
@@ -77,6 +79,7 @@ def get_detailed_analysis(symbol):
                 response = requests.get(url, timeout=5)
                 data = response.json()
                 
+                # Finnhub 狀態成功且有資料
                 if data.get('s') == 'ok':
                     df_data = {
                         'Date': [datetime.fromtimestamp(t) for t in data['t']],
@@ -90,12 +93,13 @@ def get_detailed_analysis(symbol):
                     finnhub_df.set_index('Date', inplace=True)
                     df = finnhub_df.sort_index(ascending=True).copy()
             except Exception as e:
-                print(f"🚀 Finnhub 連線錯誤: {e}")
+                print(f"🚀 Finnhub 高速通道出錯: {e}")
                 
+            # 🔥 焊死防線：美股如果抓不到，直接回報失敗，打死不准去碰 yfinance 備用線，保護 IP 安全
             if df.empty:
-                return f"❌ 數據庫目前無法取得美股 {symbol} 的資料，請確認代號是否正確（例如：NVDA、TSLA、SPY）。", None, None
+                return f"❌ 數據庫目前無法取得美股 {symbol} 的資料，請確認代號是否輸入正確（例如：NVDA、AAPL、SPY）。", None, None
 
-        # 🌟 絕對隔離區 2：只有台灣股票 (.TW) 走 yfinance 路線 (台股完全不鎖 IP)
+        # 🌟 絕對隔離區 2：只有台灣股票 (.TW) 才允許走 yfinance 路線 (台股完全不鎖 IP)
         else:
             try:
                 ticker = yf.Ticker(symbol)
@@ -116,7 +120,7 @@ def get_detailed_analysis(symbol):
         p_usd = curr_price if not is_tw else curr_price / 32
         p_twd = curr_price * 32 if not is_tw else curr_price
 
-        # 計算報酬率
+        # 計算報酬率 (安全範圍防呆)
         data_len = len(df)
         idx_252 = min(252, data_len - 1)
         idx_504 = min(504, data_len - 1)
@@ -164,7 +168,8 @@ def get_detailed_analysis(symbol):
                     [InlineKeyboardButton("Investopedia", url=f"https://www.investopedia.com/search?q={clean_sym}")],
                     [InlineKeyboardButton("Yahoo Finance", url=f"https://finance.yahoo.com/quote/{symbol}")]]
 
-        img = generate_custom_chart(df, symbol) if (is_tw or "BINANCE:" in symbol) else f"https://charts2.finviz.com/chart.ashx?t={clean_sym}&ty=c&ta=1&p=d"
+        # 台股和比特幣使用內部畫圖，其他美股走 finviz 外鏈趨勢圖
+        img = generate_custom_chart(df, symbol) if (is_tw or original_input == "BTC") else f"https://charts2.finviz.com/chart.ashx?t={clean_sym}&ty=c&ta=1&p=d"
         return report, InlineKeyboardMarkup(keyboard), img
     except Exception as e: return f"⚠️ 分析錯誤：{e}", None, None
 
